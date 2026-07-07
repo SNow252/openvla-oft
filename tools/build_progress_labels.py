@@ -35,61 +35,8 @@ def dist(a, b):
 
 
 def infer_language_goal(row, first_obs):
-    """
-    Return:
-        language_source_object
-        language_target_object
-        default_source_object
-        default_target_object
-
-    当前先支持已经采集的三类：
-    1. task8_original
-    2. task8_wrong_target_language_only
-    3. task1_native_next_to_ramekin
-    """
-    condition = row["condition"]
-    task_ids = str(row.get("task_ids", ""))
-    custom_language = str(row.get("custom_language", "")).lower()
-
-    bowl1_pos = get_vec(first_obs, "akita_black_bowl_1_pos")
-    bowl2_pos = get_vec(first_obs, "akita_black_bowl_2_pos")
-    plate_pos = get_vec(first_obs, "plate_1_pos")
-    ramekin_pos = get_vec(first_obs, "glazed_rim_porcelain_ramekin_1_pos")
-
-    # task8: bowl1 near plate, bowl2 near ramekin
-    if task_ids == "8":
-        default_source = "akita_black_bowl_1"
-        default_target = PLATE
-
-        if "ramekin" in custom_language and "place" in custom_language:
-            # wrong target language: source still bowl next to plate, target becomes ramekin
-            language_source = "akita_black_bowl_1"
-            language_target = RAMEKIN
-        else:
-            language_source = "akita_black_bowl_1"
-            language_target = PLATE
-
-        return language_source, language_target, default_source, default_target
-
-    # task1: pick bowl next to ramekin and place on plate.
-    # Robustly infer source as the bowl closer to ramekin.
-    if task_ids == "1":
-        d1 = dist(bowl1_pos, ramekin_pos)
-        d2 = dist(bowl2_pos, ramekin_pos)
-
-        if d1 <= d2:
-            language_source = "akita_black_bowl_1"
-        else:
-            language_source = "akita_black_bowl_2"
-
-        language_target = PLATE
-        default_source = language_source
-        default_target = PLATE
-
-        return language_source, language_target, default_source, default_target
-
-    # fallback
-    return "akita_black_bowl_1", PLATE, "akita_black_bowl_1", PLATE
+    from goal_inference_utils import infer_goal_for_row
+    return infer_goal_for_row(row, first_obs)
 
 
 def parse_episode(jsonl_path: Path):

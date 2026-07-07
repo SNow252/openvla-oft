@@ -58,37 +58,8 @@ def parse_jsonl(path: Path):
 
 
 def infer_goal(index_row, first_obs):
-    task_id = str(index_row.get("task_ids", ""))
-    custom_language = str(index_row.get("custom_language", "")).lower()
-
-    bowl1_pos = get_vec(first_obs, "akita_black_bowl_1_pos")
-    bowl2_pos = get_vec(first_obs, "akita_black_bowl_2_pos")
-    ramekin_pos = get_vec(first_obs, "glazed_rim_porcelain_ramekin_1_pos")
-
-    if task_id == "8":
-        language_source = "akita_black_bowl_1"
-        default_source = "akita_black_bowl_1"
-        default_target = PLATE
-
-        if "ramekin" in custom_language:
-            language_target = RAMEKIN
-        else:
-            language_target = PLATE
-
-        return language_source, language_target, default_source, default_target
-
-    if task_id == "1":
-        d1 = dist(bowl1_pos, ramekin_pos)
-        d2 = dist(bowl2_pos, ramekin_pos)
-
-        if d1 <= d2:
-            language_source = "akita_black_bowl_1"
-        else:
-            language_source = "akita_black_bowl_2"
-
-        return language_source, PLATE, language_source, PLATE
-
-    return "akita_black_bowl_1", PLATE, "akita_black_bowl_1", PLATE
+    from goal_inference_utils import infer_goal_for_row
+    return infer_goal_for_row(index_row, first_obs)
 
 
 def add_vec_features(row, prefix, vec):
