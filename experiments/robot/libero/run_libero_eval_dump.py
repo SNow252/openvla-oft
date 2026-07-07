@@ -1,3 +1,80 @@
+
+# ===== VLA TRAJECTORY DUMP PATCH START =====
+import json as _vla_json
+import time as _vla_time
+import uuid as _vla_uuid
+import numpy as _vla_np
+
+def _vla_dump_sanitize(x):
+    """Convert numpy / torch / Python objects into JSON-safe values."""
+    try:
+        if x is None or isinstance(x, (str, int, float, bool)):
+            return x
+
+        if isinstance(x, dict):
+            return {str(k): _vla_dump_sanitize(v) for k, v in x.items()}
+
+        if isinstance(x, (list, tuple)):
+            return [_vla_dump_sanitize(v) for v in x]
+
+        # torch.Tensor-like
+        if hasattr(x, "detach") and hasattr(x, "cpu"):
+            try:
+                x = x.detach().cpu().numpy()
+            except Exception:
+                x = x.detach().cpu().tolist()
+                return _vla_dump_sanitize(x)
+
+        # numpy ndarray
+        if isinstance(x, _vla_np.ndarray):
+            return _vla_dump_sanitize(x.tolist())
+
+        # numpy scalar
+        if isinstance(x, _vla_np.generic):
+            return x.item()
+
+        # generic array-like
+        if hasattr(x, "tolist"):
+            return _vla_dump_sanitize(x.tolist())
+
+        # scalar-like
+        if hasattr(x, "item"):
+            try:
+                return x.item()
+            except Exception:
+                pass
+
+        return str(x)
+
+    except Exception as e:
+        return {"dump_error": str(e), "type": str(type(x))}
+
+
+def _vla_obs_summary(obs):
+    """Keep small non-image observations only; avoid dumping full images."""
+    try:
+        if not isinstance(obs, dict):
+            return str(type(obs))
+        out = {}
+        for k, v in obs.items():
+            ks = str(k).lower()
+            if "image" in ks or "pixel" in ks or "rgb" in ks:
+                try:
+                    out[str(k)] = {"shape": list(_vla_np.asarray(v).shape), "skipped": "image"}
+                except Exception:
+                    out[str(k)] = {"skipped": "image"}
+                continue
+            arr = _vla_np.asarray(v)
+            if arr.size <= 512:
+                out[str(k)] = arr.tolist()
+            else:
+                out[str(k)] = {"shape": list(arr.shape), "skipped": "large_array"}
+        return out
+    except Exception as e:
+        return {"obs_summary_error": str(e)}
+# ===== VLA TRAJECTORY DUMP PATCH END =====
+
+
 """
 run_libero_eval.py
 
@@ -305,6 +382,31 @@ def run_episode(
                "both speed and success rate), we recommend executing the full action chunk.")
     action_queue = deque(maxlen=cfg.num_open_loop_steps)
 
+    # VLA dump config
+    _vla_dump_enabled = os.environ.get("OPENVLA_DUMP_TRAJ", "0") == "1"
+    _vla_dump_root = os.environ.get("OPENVLA_DUMP_DIR", "/tmp/openvla_oft_traj_dumps")
+    _vla_dump_path = None
+    _vla_dump_step = 0
+
+    if _vla_dump_enabled:
+        os.makedirs(_vla_dump_root, exist_ok=True)
+        _vla_dump_path = os.path.join(
+            _vla_dump_root,
+            f"traj_{int(_vla_time.time() * 1000)}_{os.getpid()}_{_vla_uuid.uuid4().hex[:8]}.jsonl",
+        )
+        with open(_vla_dump_path, "w") as _f:
+            _f.write(_vla_json.dumps({
+                "type": "meta",
+                "dump_path": _vla_dump_path,
+                "dump_condition": os.environ.get("OPENVLA_DUMP_CONDITION", ""),
+                "custom_language": os.environ.get("OPENVLA_CUSTOM_LANGUAGE", ""),
+                "task_ids": os.environ.get("OPENVLA_TASK_IDS", ""),
+                "model_family": getattr(cfg, "model_family", ""),
+                "num_open_loop_steps": getattr(cfg, "num_open_loop_steps", None),
+                "timestamp": _vla_time.time(),
+            }) + "\n")
+
+
     # Setup
     t = 0
     replay_images = []
@@ -327,6 +429,7 @@ def run_episode(
             # If action queue is empty, requery model
             if len(action_queue) == 0:
                 # Query model to get action
+                _vla_query_obs_summary = _vla_obs_summary(obs) if _vla_dump_enabled else None
                 actions = get_action(
                     cfg,
                     model,
@@ -338,16 +441,43 @@ def run_episode(
                     noisy_action_projector=noisy_action_projector,
                     use_film=cfg.use_film,
                 )
+                if _vla_dump_enabled:
+                    with open(_vla_dump_path, "a") as _f:
+                        _f.write(_vla_json.dumps({
+                            "type": "chunk",
+                            "step": _vla_dump_step,
+                            "raw_actions_chunk": _vla_dump_sanitize(_vla_np.asarray(actions)),
+                            "query_obs_summary": _vla_query_obs_summary,
+                        }) + "\n")
+
                 action_queue.extend(actions)
 
             # Get action from queue
             action = action_queue.popleft()
+            _vla_raw_action_before_process = _vla_np.asarray(action).copy()
+            _vla_obs_before_summary = _vla_obs_summary(obs) if _vla_dump_enabled else None
 
             # Process action
             action = process_action(action, cfg.model_family)
 
             # Execute action in environment
             obs, reward, done, info = env.step(action.tolist())
+
+            if _vla_dump_enabled:
+                with open(_vla_dump_path, "a") as _f:
+                    _f.write(_vla_json.dumps({
+                        "type": "step",
+                        "step": _vla_dump_step,
+                        "raw_action_before_process": _vla_dump_sanitize(_vla_raw_action_before_process),
+                        "processed_action": _vla_dump_sanitize(_vla_np.asarray(action)),
+                        "reward": _vla_dump_sanitize(reward),
+                        "done": _vla_dump_sanitize(done),
+                        "info": _vla_dump_sanitize(info),
+                        "obs_before_summary": _vla_obs_before_summary,
+                        "obs_after_summary": _vla_obs_summary(obs),
+                        "obs_summary": _vla_obs_summary(obs),
+                    }) + "\n")
+                _vla_dump_step += 1
             if done:
                 success = True
                 break
