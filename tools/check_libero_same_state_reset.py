@@ -73,7 +73,11 @@ def make_env_with_openvla_utils(args, task):
 
 
 def make_env_with_libero(args, task):
-    """Fallback: construct LIBERO env directly."""
+    """Fallback: construct LIBERO env directly.
+
+    In --no-render mode, disable all camera/offscreen rendering so this can run
+    on compute servers without /dev/dri render permission.
+    """
     from libero.libero import get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
@@ -85,6 +89,23 @@ def make_env_with_libero(args, task):
         "camera_heights": args.resolution,
         "camera_widths": args.resolution,
     }
+
+    if args.no_render:
+        env_args.update(
+            {
+                "has_renderer": False,
+                "has_offscreen_renderer": False,
+                "use_camera_obs": False,
+                "use_object_obs": True,
+            }
+        )
+    else:
+        env_args.update(
+            {
+                "render_gpu_device_id": args.render_gpu_device_id,
+            }
+        )
+
     env = OffScreenRenderEnv(**env_args)
     return env, getattr(task, "language", "")
 
@@ -96,6 +117,8 @@ def main():
     parser.add_argument("--init_state_idx", type=int, default=0)
     parser.add_argument("--num_resets", type=int, default=3)
     parser.add_argument("--resolution", type=int, default=256)
+    parser.add_argument("--render_gpu_device_id", type=int, default=0)
+    parser.add_argument("--no_render", "--no-render", action="store_true")
     parser.add_argument("--out_json", type=str, default="")
     args = parser.parse_args()
 
@@ -124,14 +147,19 @@ def main():
     print(f"[task language] {getattr(task, 'language', '')}")
     print("=" * 80)
 
-    try:
-        env, task_description = make_env_with_openvla_utils(args, task)
-        print("[env] created with OpenVLA-OFT get_libero_env")
-    except Exception as e:
-        print("[env] OpenVLA-OFT get_libero_env failed, fallback to LIBERO direct env")
-        print("[env] error:", repr(e))
+    if args.no_render:
+        print("[env] no-render mode: skip OpenVLA-OFT get_libero_env")
         env, task_description = make_env_with_libero(args, task)
-        print("[env] created with LIBERO OffScreenRenderEnv")
+        print("[env] created with LIBERO env, camera/offscreen rendering disabled")
+    else:
+        try:
+            env, task_description = make_env_with_openvla_utils(args, task)
+            print("[env] created with OpenVLA-OFT get_libero_env")
+        except Exception as e:
+            print("[env] OpenVLA-OFT get_libero_env failed, fallback to LIBERO direct env")
+            print("[env] error:", repr(e))
+            env, task_description = make_env_with_libero(args, task)
+            print("[env] created with LIBERO OffScreenRenderEnv")
 
     all_summaries = []
 
