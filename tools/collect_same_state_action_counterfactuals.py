@@ -355,6 +355,27 @@ def run_candidate(
     final_summary = summarize_obs(obs)
     progress = compute_progress(start_summary, final_summary)
 
+    if "progress_to_bowl2" in progress and "progress_to_bowl1" in progress:
+        progress["source_advantage_bowl2_over_bowl1"] = (
+            progress["progress_to_bowl2"] - progress["progress_to_bowl1"]
+        )
+        progress["bowl2_over_bowl1"] = float(
+            progress["source_advantage_bowl2_over_bowl1"] > 0.0
+        )
+
+    if "progress_to_bowl2" in progress and "progress_to_plate" in progress:
+        progress["source_advantage_bowl2_over_plate"] = (
+            progress["progress_to_bowl2"] - progress["progress_to_plate"]
+        )
+        progress["bowl2_over_plate"] = float(
+            progress["source_advantage_bowl2_over_plate"] > 0.0
+        )
+
+    if "progress_to_bowl1" in progress and "progress_to_plate" in progress:
+        progress["default_source_over_plate"] = (
+            progress["progress_to_bowl1"] - progress["progress_to_plate"]
+        )
+    
     candidate_dir.mkdir(parents=True, exist_ok=True)
 
     actions_arr = np.asarray(actions, dtype=np.float32)
