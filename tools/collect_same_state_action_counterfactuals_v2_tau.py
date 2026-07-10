@@ -82,7 +82,7 @@ def safe_name(x: str) -> str:
 
 
 def threshold_key(eps: float) -> str:
-    return str(eps).replace(".", "p").replace("-", "m")
+    return f"{eps:.2f}".replace(".", "p").replace("-", "m")
 
 
 def to_numpy(x: Any) -> Optional[np.ndarray]:
