@@ -10,35 +10,35 @@ v3 goal:
     - Does gripper timing / xy offset / grasp height matter?
     - Can kinematic EEF baselines still explain object movement?
 
+Important fixes in this version:
+  1. After set_init_state, run a post-reset settle phase BEFORE planning,
+     recording sequences, and computing labels.
+     This avoids label contamination from physics settling.
+  2. Default gripper convention:
+       -1 = open
+       +1 = close
+     based on inspection results.
+  3. Adds total_stall_steps / total_random_steps.
+  4. Writes summary.csv after every finished candidate by default.
+  5. Saves both raw_start_summary and settled start_summary.
+
 Default task:
   LIBERO-spatial task8
   source object: akita_black_bowl_2
   distractor/default source: akita_black_bowl_1
 
 Macro action:
+  settle after reset
   approach above source
   descend near source
   close gripper
   hold close
   lift
-
-Candidate variations:
-  xy offset
-  grasp z offset
-  lift height
-  gripper close value
-  optional source=bowl1 wrong-source variants
-
-Important:
-  Gripper sign may differ by environment/controller. Therefore this script
-  supports multiple --gripper_close_values, e.g. "-1,1".
-  The labels will reveal which close sign actually grasps/lifts.
 """
 
 import argparse
 import csv
 import json
-import math
 import os
 import re
 from pathlib import Path
@@ -144,6 +144,7 @@ def get_pos(summary: Dict[str, List[float]], key: str) -> np.ndarray:
 def get_vec(summary: Dict[str, List[float]], key: str, dim: int) -> np.ndarray:
     if key not in summary:
         return np.zeros(dim, dtype=np.float32)
+
     arr = np.asarray(summary[key], dtype=np.float32).reshape(-1)
     out = np.zeros(dim, dtype=np.float32)
     out[: min(dim, arr.size)] = arr[:dim]
@@ -265,18 +266,43 @@ def action_to_waypoint(
 
 def step_env(env: Any, action: np.ndarray) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
     out = env.step(action)
+
     if isinstance(out, tuple) and len(out) == 4:
         obs, reward, done, info = out
         return obs, float(reward), bool(done), info
+
     if isinstance(out, tuple) and len(out) == 5:
         obs, reward, terminated, truncated, info = out
         return obs, float(reward), bool(terminated or truncated), info
+
     raise RuntimeError(f"Unexpected env.step output type/length: {type(out)}")
 
 
 def reset_to_init(env: Any, init_state: Any) -> Dict[str, Any]:
     env.reset()
     obs = env.set_init_state(init_state)
+    return obs
+
+
+def settle_after_reset(
+    env: Any,
+    obs: Dict[str, Any],
+    settle_steps: int,
+    gripper_open_value: float,
+) -> Dict[str, Any]:
+    """
+    Let the scene settle after set_init_state.
+
+    These steps are NOT part of the candidate action chunk and are NOT included
+    in labels. This prevents object displacement labels from being polluted by
+    reset-time physics settling.
+    """
+    for _ in range(settle_steps):
+        action = np.zeros(7, dtype=np.float32)
+        action[6] = float(gripper_open_value)
+        obs, _reward, done, _info = step_env(env, action)
+        if done:
+            break
     return obs
 
 
@@ -298,8 +324,10 @@ def make_env(args: argparse.Namespace, task: Any) -> Any:
 def save_video(frames: List[np.ndarray], path: Path, fps: int) -> None:
     if not frames:
         return
+
     try:
         import imageio.v2 as imageio
+
         path.parent.mkdir(parents=True, exist_ok=True)
         imageio.mimsave(str(path), frames, fps=fps)
     except Exception as e:
@@ -317,14 +345,15 @@ def build_candidate_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
         sources.append("bowl1")
 
     specs: List[Dict[str, Any]] = []
+
     for source in sources:
         for xy in xy_offsets:
             for zgo in z_grasp_offsets:
                 for lh in lift_heights:
                     for close_value in close_values:
                         name = (
-                            f"src_{source}_xy_{xy[0]:+.2f}_{xy[1]:+.2f}"
-                            f"_zg_{zgo:.2f}_lift_{lh:.2f}_close_{close_value:+.1f}"
+                            f"src_{source}_xy_{xy[0]:+.3f}_{xy[1]:+.3f}"
+                            f"_zg_{zgo:.3f}_lift_{lh:.3f}_close_{close_value:+.1f}"
                         )
                         specs.append(
                             {
@@ -424,7 +453,20 @@ def compute_grasp_labels(
     grasp_success_proxy = float((moved > 0.5) and (lifted > 0.5))
     clean_grasp_proxy = float((grasp_success_proxy > 0.5) and (wrong_moved < 0.5))
 
-    labels = {
+    gripper_qpos_start_0 = float("nan")
+    gripper_qpos_final_0 = float("nan")
+    gripper_qpos_delta_0 = float("nan")
+    gripper_qpos_min_0 = float("nan")
+    gripper_qpos_max_0 = float("nan")
+
+    if gripper_qpos.ndim == 2 and gripper_qpos.shape[1] > 0:
+        gripper_qpos_start_0 = float(gripper_qpos[0, 0])
+        gripper_qpos_final_0 = float(gripper_qpos[-1, 0])
+        gripper_qpos_delta_0 = float(gripper_qpos[-1, 0] - gripper_qpos[0, 0])
+        gripper_qpos_min_0 = float(np.min(gripper_qpos[:, 0]))
+        gripper_qpos_max_0 = float(np.max(gripper_qpos[:, 0]))
+
+    labels: Dict[str, Any] = {
         "source_object": source,
         "distractor_object": distractor,
 
@@ -460,10 +502,11 @@ def compute_grasp_labels(
             - 0.1 * min_d_src
         ),
 
-        # Gripper diagnostics.
-        "gripper_qpos_start_0": float(gripper_qpos[0, 0]) if gripper_qpos.ndim == 2 and gripper_qpos.shape[1] > 0 else float("nan"),
-        "gripper_qpos_final_0": float(gripper_qpos[-1, 0]) if gripper_qpos.ndim == 2 and gripper_qpos.shape[1] > 0 else float("nan"),
-        "gripper_qpos_delta_0": float(gripper_qpos[-1, 0] - gripper_qpos[0, 0]) if gripper_qpos.ndim == 2 and gripper_qpos.shape[1] > 0 else float("nan"),
+        "gripper_qpos_start_0": gripper_qpos_start_0,
+        "gripper_qpos_final_0": gripper_qpos_final_0,
+        "gripper_qpos_delta_0": gripper_qpos_delta_0,
+        "gripper_qpos_min_0": gripper_qpos_min_0,
+        "gripper_qpos_max_0": gripper_qpos_max_0,
     }
 
     return labels
@@ -478,7 +521,17 @@ def run_candidate(
     rng: np.random.Generator,
     candidate_dir: Path,
 ) -> Dict[str, Any]:
-    obs = reset_to_init(env, init_state)
+    # Important: raw reset state may be physically unsettled.
+    obs_raw = reset_to_init(env, init_state)
+    raw_start_summary = summarize_obs(obs_raw)
+
+    # Let scene settle before planning, recording, and labeling.
+    obs = settle_after_reset(
+        env=env,
+        obs=obs_raw,
+        settle_steps=args.settle_steps,
+        gripper_open_value=args.gripper_open_value,
+    )
     start_summary = summarize_obs(obs)
 
     actions: List[np.ndarray] = []
@@ -507,7 +560,6 @@ def run_candidate(
 
     family = spec["candidate_family"]
 
-    # Build an explicit phase plan: list of (phase_name, steps, waypoint, gripper_value).
     phase_plan: List[Tuple[str, int, Optional[np.ndarray], float]] = []
 
     if family == "grasp_macro":
@@ -550,9 +602,11 @@ def run_candidate(
                 action[:3] = rng.normal(0.0, args.random_std, size=3)
                 action[:3] = np.clip(action[:3], -args.max_action, args.max_action)
                 action[6] = float(gripper_value)
+
             elif waypoint is None:
                 action = np.zeros(7, dtype=np.float32)
                 action[6] = float(gripper_value)
+
             else:
                 action = action_to_waypoint(
                     obs=obs,
@@ -586,10 +640,10 @@ def run_candidate(
     final_summary = summarize_obs(obs)
     seq_arrays = sequence_to_arrays(seq)
 
-    # Compute labels for source=bowl2 by default; if wrong-source candidate, use its chosen source too.
     source = str(spec.get("source", "bowl2"))
     if source not in {"bowl1", "bowl2"}:
         source = "bowl2"
+
     distractor = "bowl1" if source == "bowl2" else "bowl2"
 
     labels = compute_grasp_labels(
@@ -610,7 +664,11 @@ def run_candidate(
         move_threshold=args.move_threshold,
         lift_threshold=args.lift_threshold,
     )
-    labels_bowl2 = {f"bowl2_{k}": v for k, v in labels_bowl2.items() if isinstance(v, (int, float, np.floating))}
+    labels_bowl2 = {
+        f"bowl2_{k}": v
+        for k, v in labels_bowl2.items()
+        if isinstance(v, (int, float, np.floating))
+    }
     labels.update(labels_bowl2)
 
     candidate_dir.mkdir(parents=True, exist_ok=True)
@@ -619,7 +677,7 @@ def run_candidate(
     rewards_arr = np.asarray(rewards, dtype=np.float32)
     dones_arr = np.asarray(dones, dtype=bool)
 
-    npz_payload = {
+    npz_payload: Dict[str, Any] = {
         "actions": actions_arr,
         "rewards": rewards_arr,
         "dones": dones_arr,
@@ -636,7 +694,9 @@ def run_candidate(
         "candidate_family": spec["candidate_family"],
         "candidate_spec": spec,
         "horizon_executed": int(len(actions)),
+        "raw_start_summary": raw_start_summary,
         "start_summary": start_summary,
+        "settle_steps": int(args.settle_steps),
         "final_summary": final_summary,
         "labels": labels,
         "sum_reward": float(np.sum(rewards_arr)) if len(rewards_arr) else 0.0,
@@ -669,6 +729,7 @@ def run_candidate(
         "z_grasp_offset": spec.get("z_grasp_offset", float("nan")),
         "lift_height": spec.get("lift_height", float("nan")),
         "gripper_close_value": spec.get("gripper_close_value", float("nan")),
+        "settle_steps": int(args.settle_steps),
         "horizon_executed": int(len(actions)),
         "sum_reward": meta["sum_reward"],
         "any_done": int(meta["any_done"]),
@@ -691,12 +752,15 @@ def write_summary_csv(rows: List[Dict[str, Any]], path: Path) -> None:
         "z_grasp_offset",
         "lift_height",
         "gripper_close_value",
+        "settle_steps",
         "horizon_executed",
         "sum_reward",
         "any_done",
     ]
     extra_fields = sorted({k for r in rows for k in r.keys()} - set(base_fields))
     fields = base_fields + extra_fields
+
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -710,17 +774,20 @@ def print_preview(rows: List[Dict[str, Any]], max_rows: int = 30) -> None:
     print("[v3 grasp preview]")
     for r in rows[:max_rows]:
         print(
-            f"init={r['init_state_idx']:03d} "
-            f"{r['candidate_name'][:50]:50s} "
-            f"src={r.get('source', ''):5s} "
-            f"xy=({r.get('xy_offset_x', float('nan')):+.2f},{r.get('xy_offset_y', float('nan')):+.2f}) "
-            f"zg={r.get('z_grasp_offset', float('nan')):.2f} "
-            f"close={r.get('gripper_close_value', float('nan')):+.1f} "
-            f"disp={r.get('bowl2_source_displacement_max', float('nan')):.4f} "
-            f"lift={r.get('bowl2_source_z_delta_max', float('nan')):.4f} "
+            f"init={int(r['init_state_idx']):03d} "
+            f"{str(r['candidate_name'])[:50]:50s} "
+            f"src={str(r.get('source', '')):5s} "
+            f"xy=({float(r.get('xy_offset_x', float('nan'))):+.3f},"
+            f"{float(r.get('xy_offset_y', float('nan'))):+.3f}) "
+            f"zg={float(r.get('z_grasp_offset', float('nan'))):+.3f} "
+            f"close={float(r.get('gripper_close_value', float('nan'))):+.1f} "
+            f"min_d={float(r.get('bowl2_min_dist_to_source', float('nan'))):.4f} "
+            f"disp={float(r.get('bowl2_source_displacement_max', float('nan'))):.4f} "
+            f"lift={float(r.get('bowl2_source_z_delta_max', float('nan'))):.4f} "
             f"moved={r.get('bowl2_source_moved', float('nan'))} "
             f"lifted={r.get('bowl2_source_lifted', float('nan'))} "
-            f"grasp={r.get('bowl2_grasp_success_proxy', float('nan'))}"
+            f"grasp={r.get('bowl2_grasp_success_proxy', float('nan'))} "
+            f"gq_delta={float(r.get('bowl2_gripper_qpos_delta_0', float('nan'))):+.4f}"
         )
     print("=" * 120)
 
@@ -736,13 +803,30 @@ def main() -> None:
     parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument("--out_dir", type=str, required=True)
 
-    parser.add_argument("--xy_offsets", type=str, default="0,0;0.02,0;-0.02,0;0,0.02;0,-0.02;0.04,0;-0.04,0")
+    parser.add_argument(
+        "--xy_offsets",
+        type=str,
+        default="0,0;0.02,0;-0.02,0;0,0.02;0,-0.02;0.04,0;-0.04,0",
+    )
     parser.add_argument("--z_grasp_offsets", type=str, default="0.00,0.02,0.04,0.06")
     parser.add_argument("--lift_heights", type=str, default="0.08,0.12")
-    parser.add_argument("--gripper_close_values", type=str, default="-1,1")
+
+    # Confirmed from inspection:
+    #   +1 closes gripper qpos toward ~0.0005
+    #   -1 opens gripper qpos toward ~0.039
+    parser.add_argument("--gripper_open_value", type=float, default=-1.0)
+    parser.add_argument("--gripper_close_values", type=str, default="1")
+
     parser.add_argument("--include_wrong_source", action="store_true")
     parser.add_argument("--include_stall", action="store_true")
     parser.add_argument("--include_random", action="store_true")
+
+    parser.add_argument(
+        "--settle_steps",
+        type=int,
+        default=20,
+        help="Number of open-gripper no-op steps after set_init_state before planning and recording.",
+    )
 
     parser.add_argument("--approach_height", type=float, default=0.18)
     parser.add_argument("--approach_steps", type=int, default=24)
@@ -751,30 +835,14 @@ def main() -> None:
     parser.add_argument("--close_hold_steps", type=int, default=10)
     parser.add_argument("--lift_steps", type=int, default=24)
 
+    parser.add_argument("--total_stall_steps", type=int, default=-1)
+    parser.add_argument("--total_random_steps", type=int, default=-1)
+    parser.add_argument("--write_summary_every", type=int, default=1)
+
     parser.add_argument("--kp", type=float, default=8.0)
     parser.add_argument("--max_action", type=float, default=0.5)
     parser.add_argument("--action_noise_std", type=float, default=0.0)
     parser.add_argument("--random_std", type=float, default=0.20)
-    parser.add_argument(
-    "--total_stall_steps",
-    type=int,
-    default=-1,
-    help="Number of steps for stall candidate. If negative, use the macro horizon.",
-    )
-    parser.add_argument(
-        "--total_random_steps",
-        type=int,
-        default=-1,
-        help="Number of steps for random candidate. If negative, use the macro horizon.",
-    )
-    parser.add_argument(
-        "--write_summary_every",
-        type=int,
-        default=1,
-        help="Write summary.csv every N finished candidates to avoid losing partial results.",
-    )
-    
-    parser.add_argument("--gripper_open_value", type=float, default=0.0)
 
     parser.add_argument("--contact_threshold", type=float, default=0.08)
     parser.add_argument("--move_threshold", type=float, default=0.015)
@@ -788,11 +856,11 @@ def main() -> None:
     args = parser.parse_args()
 
     macro_horizon = (
-    args.approach_steps
-    + args.descend_steps
-    + args.preclose_hold_steps
-    + args.close_hold_steps
-    + args.lift_steps
+        args.approach_steps
+        + args.descend_steps
+        + args.preclose_hold_steps
+        + args.close_hold_steps
+        + args.lift_steps
     )
 
     if args.total_stall_steps < 0:
@@ -800,7 +868,7 @@ def main() -> None:
 
     if args.total_random_steps < 0:
         args.total_random_steps = macro_horizon
-    
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -808,6 +876,10 @@ def main() -> None:
     print("[env] CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
     print("[env] MUJOCO_GL =", os.environ.get("MUJOCO_GL"))
     print("[env] PYTHONPATH =", os.environ.get("PYTHONPATH", "")[:500])
+    print("[macro_horizon]", macro_horizon)
+    print("[settle_steps]", args.settle_steps)
+    print("[gripper_open_value]", args.gripper_open_value)
+    print("[gripper_close_values]", args.gripper_close_values)
     print("=" * 120)
 
     from libero.libero import benchmark
@@ -830,6 +902,7 @@ def main() -> None:
         )
 
     specs = build_candidate_specs(args)
+
     print(f"[num candidates per init] {len(specs)}")
     for i, spec in enumerate(specs[:20]):
         print(f"  {i:03d}: {spec}")
@@ -849,7 +922,15 @@ def main() -> None:
             seed_dir = out_dir / f"init_{init_state_idx:03d}"
             seed_dir.mkdir(parents=True, exist_ok=True)
 
-            init_obs = reset_to_init(env, init_states[init_state_idx])
+            # Save settled initial state for this init_state.
+            init_obs_raw = reset_to_init(env, init_states[init_state_idx])
+            raw_init_summary = summarize_obs(init_obs_raw)
+            init_obs = settle_after_reset(
+                env=env,
+                obs=init_obs_raw,
+                settle_steps=args.settle_steps,
+                gripper_open_value=args.gripper_open_value,
+            )
             init_summary = summarize_obs(init_obs)
 
             with open(seed_dir / "initial_state.json", "w") as f:
@@ -859,6 +940,8 @@ def main() -> None:
                         "task_suite_name": args.task_suite_name,
                         "task_id": args.task_id,
                         "task_language": getattr(task, "language", ""),
+                        "settle_steps": int(args.settle_steps),
+                        "raw_summary": raw_init_summary,
                         "summary": init_summary,
                     },
                     f,
@@ -883,16 +966,17 @@ def main() -> None:
 
                 if args.write_summary_every > 0 and len(all_rows) % args.write_summary_every == 0:
                     write_summary_csv(all_rows, out_dir / "summary.csv")
-                
+
                 print(
-                    f"    min_d={row.get('bowl2_min_dist_to_source', float('nan')):.4f}, "
-                    f"disp={row.get('bowl2_source_displacement_max', float('nan')):.4f}, "
-                    f"lift={row.get('bowl2_source_z_delta_max', float('nan')):.4f}, "
+                    f"    min_d={float(row.get('bowl2_min_dist_to_source', float('nan'))):.4f}, "
+                    f"disp={float(row.get('bowl2_source_displacement_max', float('nan'))):.4f}, "
+                    f"lift={float(row.get('bowl2_source_z_delta_max', float('nan'))):.4f}, "
                     f"moved={row.get('bowl2_source_moved', float('nan'))}, "
                     f"lifted={row.get('bowl2_source_lifted', float('nan'))}, "
                     f"grasp={row.get('bowl2_grasp_success_proxy', float('nan'))}, "
-                    f"gq_delta={row.get('bowl2_gripper_qpos_delta_0', float('nan')):.4f}"
+                    f"gq_delta={float(row.get('bowl2_gripper_qpos_delta_0', float('nan'))):+.4f}"
                 )
+
             write_summary_csv(all_rows, out_dir / "summary.csv")
 
     finally:
