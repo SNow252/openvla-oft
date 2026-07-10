@@ -779,7 +779,7 @@ def main() -> None:
         }
 
         for actions, actual_eef, bowl2_start in zip(actions_list, actual_eef_list, bowl2_start_list):
-            if scale == "actual":
+            if isinstance(scale, str) and scale == "actual":
                 eef_seq = actual_eef
             else:
                 eef_seq = predict_eef_seq_from_actions(
