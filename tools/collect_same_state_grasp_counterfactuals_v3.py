@@ -755,7 +755,25 @@ def main() -> None:
     parser.add_argument("--max_action", type=float, default=0.5)
     parser.add_argument("--action_noise_std", type=float, default=0.0)
     parser.add_argument("--random_std", type=float, default=0.20)
-
+    parser.add_argument(
+    "--total_stall_steps",
+    type=int,
+    default=-1,
+    help="Number of steps for stall candidate. If negative, use the macro horizon.",
+    )
+    parser.add_argument(
+        "--total_random_steps",
+        type=int,
+        default=-1,
+        help="Number of steps for random candidate. If negative, use the macro horizon.",
+    )
+    parser.add_argument(
+        "--write_summary_every",
+        type=int,
+        default=1,
+        help="Write summary.csv every N finished candidates to avoid losing partial results.",
+    )
+    
     parser.add_argument("--gripper_open_value", type=float, default=0.0)
 
     parser.add_argument("--contact_threshold", type=float, default=0.08)
@@ -769,6 +787,20 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    macro_horizon = (
+    args.approach_steps
+    + args.descend_steps
+    + args.preclose_hold_steps
+    + args.close_hold_steps
+    + args.lift_steps
+    )
+
+    if args.total_stall_steps < 0:
+        args.total_stall_steps = macro_horizon
+
+    if args.total_random_steps < 0:
+        args.total_random_steps = macro_horizon
+    
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -849,14 +881,18 @@ def main() -> None:
                 )
                 all_rows.append(row)
 
+                if args.write_summary_every > 0 and len(all_rows) % args.write_summary_every == 0:
+                    write_summary_csv(all_rows, out_dir / "summary.csv")
+                
                 print(
-                    f"    bowl2_disp={row.get('bowl2_source_displacement_max', float('nan')):.4f}, "
-                    f"bowl2_lift={row.get('bowl2_source_z_delta_max', float('nan')):.4f}, "
-                    f"bowl2_moved={row.get('bowl2_source_moved', float('nan'))}, "
-                    f"bowl2_lifted={row.get('bowl2_source_lifted', float('nan'))}, "
-                    f"bowl2_grasp={row.get('bowl2_grasp_success_proxy', float('nan'))}"
+                    f"    min_d={row.get('bowl2_min_dist_to_source', float('nan')):.4f}, "
+                    f"disp={row.get('bowl2_source_displacement_max', float('nan')):.4f}, "
+                    f"lift={row.get('bowl2_source_z_delta_max', float('nan')):.4f}, "
+                    f"moved={row.get('bowl2_source_moved', float('nan'))}, "
+                    f"lifted={row.get('bowl2_source_lifted', float('nan'))}, "
+                    f"grasp={row.get('bowl2_grasp_success_proxy', float('nan'))}, "
+                    f"gq_delta={row.get('bowl2_gripper_qpos_delta_0', float('nan')):.4f}"
                 )
-
             write_summary_csv(all_rows, out_dir / "summary.csv")
 
     finally:
