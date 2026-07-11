@@ -108,10 +108,22 @@ def prefix_numeric_labels(labels: Dict[str, Any], prefix: str) -> Dict[str, Any]
 def parse_condition(candidate_name: str) -> str:
     name = str(candidate_name)
 
-    # Remove repeated openvla prefix from replay candidate names.
+    # Fresh dump candidate examples:
+    # openvla_oft_openvla_oft_task8_original_task8_init000_178...
+    # openvla_oft_openvla_oft_task8_empty_language_task8_init000_178...
+    # smolvla_smolvla_task8_original_task8_init000_178...
+
+    # Old dump candidate examples:
+    # openvla_oft_openvla_oft_mismatch_v2_processed_task8_original_xxxxx
+    # openvla_oft_mismatch_v2_processed_task8_empty_language_xxxxx
+
     prefixes = [
         "openvla_oft_openvla_oft_mismatch_v2_processed_",
         "openvla_oft_mismatch_v2_processed_",
+        "openvla_oft_openvla_oft_",
+        "openvla_oft_",
+        "smolvla_smolvla_",
+        "smolvla_",
     ]
 
     for p in prefixes:
@@ -119,9 +131,16 @@ def parse_condition(candidate_name: str) -> str:
             name = name[len(p):]
             break
 
-    # Remove final short hash token.
+    # Fresh format: <condition>_task<id>_init<idx>_<timestamp>_<pid>_<hash>
+    # Keep only <condition>.
+    m = re.match(r"^(.*)_task\d+_init\d+_", name)
+    if m:
+        return m.group(1)
+
+    # Old format: <condition>_<hash>
+    # Remove final short hash token if present.
     parts = name.split("_")
-    if len(parts) > 1:
+    if len(parts) > 1 and re.match(r"^[0-9a-fA-F]{6,12}$", parts[-1]):
         name = "_".join(parts[:-1])
 
     return name
