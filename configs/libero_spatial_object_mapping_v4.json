@@ -1,0 +1,40 @@
+{
+  "libero_spatial": {
+    "task1": {
+      "task_id": 1,
+      "language": "pick up the black bowl next to the ramekin and place it on the plate",
+      "primary_object": "akita_black_bowl_1",
+      "alternative_object": "akita_black_bowl_2",
+      "target_object": "plate_1",
+      "primary_role": "bowl next to ramekin in task1 native scene",
+      "alternative_role": "other black bowl"
+    },
+    "task3": {
+      "task_id": 3,
+      "language": "pick up the black bowl on the cookie box and place it on the plate",
+      "primary_object": "akita_black_bowl_1",
+      "alternative_object": "akita_black_bowl_2",
+      "target_object": "plate_1",
+      "primary_role": "bowl on cookie box",
+      "alternative_role": "other black bowl"
+    },
+    "task8": {
+      "task_id": 8,
+      "language": "pick up the black bowl next to the plate and place it on the plate",
+      "primary_object": "akita_black_bowl_1",
+      "alternative_object": "akita_black_bowl_2",
+      "target_object": "plate_1",
+      "primary_role": "bowl next to plate",
+      "alternative_role": "other black bowl / bowl near ramekin in task8 scene"
+    },
+    "task9": {
+      "task_id": 9,
+      "language": "pick up the black bowl on the wooden cabinet and place it on the plate",
+      "primary_object": "akita_black_bowl_1",
+      "alternative_object": "akita_black_bowl_2",
+      "target_object": "plate_1",
+      "primary_role": "bowl on wooden cabinet",
+      "alternative_role": "other black bowl"
+    }
+  }
+}
