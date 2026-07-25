@@ -252,6 +252,18 @@ def add_profile_scores(row):
         - 0.20 * native_unintended_g
     )
 
+    # Language-fidelity score: only defined when the language condition has a clear intended object.
+    # For empty/nonsense/unrelated language, this remains NaN.
+    if lang_side == "none":
+        profile_score_language = float("nan")
+    else:
+        profile_score_language = (
+            lang_q
+            + 0.5 * lang_selectivity_q
+            + 0.20 * lang_g
+            - 0.20 * lang_unintended_g
+        )
+
     # Efficacy-only score ignores whether the policy manipulated the intended object.
     efficacy_score = efficacy_q + 0.20 * efficacy_grasp
 
@@ -276,6 +288,7 @@ def add_profile_scores(row):
         "abs_object_bias_grasp": abs_object_bias_grasp,
         "collapse_flag": collapse_flag,
         "profile_score_native": profile_score_native,
+        "profile_score_language": profile_score_language,
     })
     return out
 
@@ -333,6 +346,39 @@ def write_rankings_by_task(rows, path):
                 f"{fmt(r['profile_score_native'],3,True)} | "
                 f"{fmt(r['efficacy_score'],3,True)} | "
                 f"{fmt(r['native_selectivity_q'],3,True)} | "
+                f"{r['collapse_flag']} |"
+            )
+        lines.append("")
+
+    Path(path).write_text("\n".join(lines) + "\n")
+
+
+def write_language_rankings_by_task(rows, path):
+    by_task = defaultdict(list)
+    for r in rows:
+        if r.get("language_intended_side") != "none" and math.isfinite(float(r.get("profile_score_language", float("nan")))):
+            by_task[r["task"]].append(r)
+
+    lines = []
+    lines.append("# Language-fidelity rankings by task")
+    lines.append("")
+    lines.append("This table ranks only conditions with a clear language-directed object. Empty, nonsense, and unrelated conditions are excluded.")
+    lines.append("")
+
+    for task in sorted(by_task):
+        lines.append(f"## {task}")
+        lines.append("")
+        lines.append("| Rank | Policy | Condition | Lang intended | Lang profile | Template profile | Efficacy | Lang selectivity | Collapse |")
+        lines.append("|---:|---|---|---|---:|---:|---:|---:|---:|")
+
+        ranked = sorted(by_task[task], key=lambda x: x["profile_score_language"], reverse=True)
+        for i, r in enumerate(ranked, 1):
+            lines.append(
+                f"| {i} | {r['policy']} | {r['condition']} | {r['language_intended_side']} | "
+                f"{fmt(r['profile_score_language'],3,True)} | "
+                f"{fmt(r['profile_score_native'],3,True)} | "
+                f"{fmt(r['efficacy_score'],3,True)} | "
+                f"{fmt(r['language_selectivity_q'],3,True)} | "
                 f"{r['collapse_flag']} |"
             )
         lines.append("")
@@ -459,6 +505,7 @@ def main():
     profile_csv = out_dir / "policy_profile_scores.csv"
     profile_md = out_dir / "policy_profile_scores.md"
     rankings_md = out_dir / "rankings_by_task.md"
+    language_rankings_md = out_dir / "language_rankings_by_task.md"
     comparison_md = out_dir / "same_condition_policy_comparison.md"
     comparison_csv = out_dir / "same_condition_policy_comparison.csv"
     interp_md = out_dir / "policy_profile_ranking_interpretation.md"
@@ -466,6 +513,7 @@ def main():
     write_csv(rows, profile_csv)
     write_profile_md(rows, profile_md)
     write_rankings_by_task(rows, rankings_md)
+    write_language_rankings_by_task(rows, language_rankings_md)
     comparison_rows = write_same_condition_policy_comparison(rows, comparison_md)
     write_csv(comparison_rows, comparison_csv)
     write_interpretation(rows, comparison_rows, interp_md)
@@ -473,6 +521,7 @@ def main():
     print("[saved]", profile_csv)
     print("[saved]", profile_md)
     print("[saved]", rankings_md)
+    print("[saved]", language_rankings_md)
     print("[saved]", comparison_md)
     print("[saved]", comparison_csv)
     print("[saved]", interp_md)
@@ -480,6 +529,8 @@ def main():
     print(profile_md.read_text())
     print()
     print(rankings_md.read_text())
+    print()
+    print(language_rankings_md.read_text())
     print()
     print(comparison_md.read_text())
     print()
